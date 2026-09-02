@@ -161,3 +161,46 @@ def fetch_universe(market: str = "KOSPI", top_n: int = 200) -> list[str]:
         raise RuntimeError(f"{market} 시가총액 데이터를 가져오지 못했습니다 (기준일 {ref_date}). {_KRX_AUTH_HINT}")
 
     return cap.sort_values("시가총액", ascending=False).head(top_n).index.tolist()
+
+
+def fetch_index_ohlcv(index_code: str, start: str, end: str) -> pd.DataFrame:
+    """지수(예: KOSPI 종합지수)의 일봉 OHLCV를 조회한다. SQLite 캐시를 우선 사용한다.
+
+    fetch_investor_flow/fetch_universe와 마찬가지로 KRX_ID/KRX_PW가 필요하다.
+
+    Parameters
+    ----------
+    index_code : pykrx 지수 코드 (예: "1001" = KOSPI 종합지수, config.KOSPI_INDEX_CODE)
+    start, end : "YYYYMMDD" 형식 문자열
+
+    Returns
+    -------
+    date를 인덱스로 하는 DataFrame. 컬럼: open, high, low, close, volume.
+    """
+    from pykrx import stock
+
+    cache_key = f"IDX_{index_code}"  # ohlcv 테이블은 (ticker, date) PK라 종목코드 자리에 지수 전용 키를 사용
+    conn = store.get_connection()
+    try:
+        start_n, end_n = store.normalize_date(start), store.normalize_date(end)
+        fetched_start, fetched_end = store.get_fetch_range(conn, "ohlcv", cache_key)
+
+        if fetched_start is not None and fetched_start <= start_n and fetched_end >= end_n:
+            return store.query_ohlcv(conn, cache_key, start, end)
+
+        logger.info("pykrx에서 지수 %s OHLCV 수집: %s~%s", index_code, start, end)
+        raw = _retry_call(stock.get_index_ohlcv_by_date, start, end, index_code)
+        time.sleep(_PYKRX_SLEEP_SEC)
+
+        if raw is None or raw.empty:
+            raise RuntimeError(f"지수 {index_code} OHLCV 데이터를 가져오지 못했습니다. {_KRX_AUTH_HINT}")
+
+        raw = raw.rename(
+            columns={"시가": "open", "고가": "high", "저가": "low", "종가": "close", "거래량": "volume"}
+        )[["open", "high", "low", "close", "volume"]]
+
+        store.upsert_ohlcv(conn, cache_key, raw)
+        store.expand_fetch_range(conn, "ohlcv", cache_key, start, end)
+        return store.query_ohlcv(conn, cache_key, start, end)
+    finally:
+        conn.close()

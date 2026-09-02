@@ -65,6 +65,158 @@ def _combine(raw_scores: dict[str, float], regime_label: str) -> tuple[float, di
     return total, category_scores
 
 
+def _trend_score_series(df: pd.DataFrame) -> pd.Series:
+    """추세 카테고리 원점수(0~1)를 전체 기간에 대해 한 번에 계산한다(백테스트/스크리너용).
+
+    _trend_score와 동일한 공식을 벡터화한 버전이다. evidences 없이 숫자만 필요할 때
+    (예: 매일 스코어를 계산해야 하는 백테스트) _trend_score를 날짜마다 반복 호출하면
+    매번 전체 지표를 처음부터 다시 계산해 O(n^2)이 되므로, 이 함수로 한 번만 계산한다.
+    """
+    n = len(config.SMA_WINDOWS)
+    max_sma_score = n * (n - 1) / 2
+    sma_norm = (trend.sma_alignment(df) + max_sma_score) / (2 * max_sma_score)
+
+    macd_df = trend.macd(df)
+    macd_line, signal_line, hist = macd_df["macd"], macd_df["signal"], macd_df["histogram"]
+    macd_score = pd.Series(
+        np.select(
+            [(macd_line > signal_line) & (hist > 0), macd_line > signal_line, hist > 0],
+            [1.0, 0.75, 0.25],
+            default=0.0,
+        ),
+        index=df.index,
+    ).where(macd_line.notna() & signal_line.notna() & hist.notna())
+
+    ich = trend.ichimoku(df)
+    cloud_top = pd.concat([ich["senkou_a"], ich["senkou_b"]], axis=1).max(axis=1)
+    cloud_bottom = pd.concat([ich["senkou_a"], ich["senkou_b"]], axis=1).min(axis=1)
+    close = df["close"]
+    cloud_score = pd.Series(
+        np.select([close > cloud_top, close < cloud_bottom], [1.0, 0.0], default=0.5), index=df.index
+    )
+    cross_score = (ich["tenkan"] > ich["kijun"]).astype(float)
+    chikou_score = (ich["chikou_signal"] > 0).astype(float)
+    ichimoku_score = (cloud_score + cross_score + chikou_score) / 3
+    ichimoku_invalid = (
+        ich["senkou_a"].isna() | ich["senkou_b"].isna() | ich["tenkan"].isna() | ich["kijun"].isna()
+        | ich["chikou_signal"].isna()
+    )
+    ichimoku_score = ichimoku_score.mask(ichimoku_invalid)
+
+    return (15 * sma_norm + 10 * macd_score + 10 * ichimoku_score) / 35
+
+
+def _momentum_score_series(df: pd.DataFrame, regime_series: pd.Series) -> pd.Series:
+    """모멘텀 카테고리 원점수(0~1)를 전체 기간에 대해 계산한다. _momentum_score의 벡터화 버전."""
+    rsi_series = momentum.rsi(df, period=config.RSI_PERIOD)
+    stoch = momentum.stochastic(df)
+    divergence_series = momentum.rsi_divergence(df)
+
+    is_ranging = regime_series == "RANGING"
+    rsi_score = pd.Series(
+        np.where(is_ranging, 1 - rsi_series / 100, rsi_series / 100), index=df.index
+    ).clip(0, 1)
+    stoch_score = (1 - stoch["k"] / 100).clip(0, 1)
+    divergence_score = (divergence_series + 1) / 2
+
+    momentum_raw = (10 * rsi_score + 5 * stoch_score + 5 * divergence_score) / 20
+    invalid = rsi_series.isna() | stoch["k"].isna() | divergence_series.isna() | regime_series.isna()
+    return momentum_raw.mask(invalid)
+
+
+def _volume_score_series(df: pd.DataFrame) -> pd.Series:
+    """거래량 카테고리 원점수(0~1)를 전체 기간에 대해 계산한다. _volume_score의 벡터화 버전."""
+    obv_series = volume.obv(df)
+    obv_prev = obv_series.shift(config.OBV_TREND_LOOKBACK)  # shift(N): N일 전(과거) 값과 비교
+    poc_series = volume.volume_profile_poc(df)
+    vol_avg = df["volume"].rolling(config.VOLUME_SURGE_LOOKBACK).mean()
+    prev_close = df["close"].shift(1)  # shift(1): 전일(과거) 종가
+
+    obv_score = (obv_series > obv_prev).astype(float)
+    poc_score = (df["close"] > poc_series).astype(float)
+
+    is_surge = df["volume"] > config.VOLUME_SURGE_MULTIPLIER * vol_avg
+    price_up = df["close"] > prev_close
+    surge_score = pd.Series(
+        np.select([is_surge & price_up, is_surge & ~price_up], [1.0, 0.0], default=0.5), index=df.index
+    )
+
+    volume_raw = (8 * obv_score + 7 * poc_score + 5 * surge_score) / 20
+    invalid = obv_prev.isna() | poc_series.isna() | vol_avg.isna() | prev_close.isna()
+    return volume_raw.mask(invalid)
+
+
+def _flow_score_series(df: pd.DataFrame) -> pd.Series:
+    """수급 카테고리 원점수(0~1)를 전체 기간에 대해 계산한다. _flow_score의 벡터화 버전."""
+    if "foreign_net" not in df.columns or "institution_net" not in df.columns:
+        return pd.Series(np.nan, index=df.index)
+
+    foreign_streak = flow_indicators.foreign_net_streak(df)
+    institution_streak = flow_indicators.institution_net_streak(df)
+    foreign_component = (foreign_streak / config.FLOW_STREAK_FULL_SCORE_DAYS).clip(0, 1)
+    institution_component = (institution_streak / config.FLOW_STREAK_FULL_SCORE_DAYS).clip(0, 1)
+
+    flow_raw = (8 * foreign_component + 7 * institution_component) / 15
+    invalid = foreign_streak.isna() | institution_streak.isna()
+    return flow_raw.mask(invalid)
+
+
+def _relative_strength_score_series(df: pd.DataFrame, benchmark_close: pd.Series | None) -> pd.Series:
+    """상대강도 카테고리 원점수(0~1)를 전체 기간에 대해 계산한다. _relative_strength_score의 벡터화 버전."""
+    if benchmark_close is None:
+        return pd.Series(0.5, index=df.index)
+
+    stock_return = df["close"].pct_change(config.RS_WINDOW)
+    bench_return = benchmark_close.reindex(df.index).pct_change(config.RS_WINDOW)
+    excess = stock_return - bench_return
+    rs_raw = (0.5 + excess / (2 * config.RS_SCALE)).clip(0, 1)
+    return rs_raw.mask(stock_return.isna() | bench_return.isna())
+
+
+def total_score_series(df: pd.DataFrame, benchmark_close: pd.Series | None = None) -> pd.Series:
+    """전체 기간에 대해 0~100 총점을 벡터화 계산한다(백테스트/스크리너용, evidences 없음).
+
+    score()와 동일한 국면별 가중치 조합 규칙을 쓰지만, 매일 반복 호출해도 O(n)에
+    끝나도록 지표를 한 번씩만 계산한다.
+    """
+    regime_series = regime_engine.classify_regime(df)
+    trend_s = _trend_score_series(df)
+    momentum_s = _momentum_score_series(df, regime_series)
+    volume_s = _volume_score_series(df)
+    flow_s = _flow_score_series(df)
+    rs_s = _relative_strength_score_series(df, benchmark_close)
+
+    total = pd.Series(np.nan, index=df.index)
+    for regime_label, weights in config.REGIME_CATEGORY_WEIGHTS.items():
+        mask = regime_series == regime_label
+        weighted = (
+            weights["trend"] * trend_s
+            + weights["momentum"] * momentum_s
+            + weights["volume"] * volume_s
+            + weights["flow"] * flow_s
+            + weights["relative_strength"] * rs_s
+        )
+        total = total.where(~mask, weighted)
+
+    any_missing = trend_s.isna() | momentum_s.isna() | volume_s.isna() | flow_s.isna() | rs_s.isna() | regime_series.isna()
+    return total.mask(any_missing)
+
+
+def stop_loss_series(df: pd.DataFrame) -> pd.Series:
+    """진입가(종가) - 2×ATR(14) 기준 손절가 Series."""
+    atr_series = volatility.atr(df, period=config.ATR_PERIOD)
+    return df["close"] - config.STOP_LOSS_ATR_MULTIPLIER * atr_series
+
+
+def position_size_pct_series(df: pd.DataFrame) -> pd.Series:
+    """(2% 리스크) / ((종가-손절가)/종가), 최대 config.MAX_POSITION_PCT로 캡한 포지션 비중 Series."""
+    stop_loss = stop_loss_series(df)
+    close = df["close"]
+    risk_per_price_pct = (close - stop_loss) / close
+    raw = config.RISK_PER_TRADE_PCT / risk_per_price_pct
+    return raw.clip(upper=config.MAX_POSITION_PCT).where(risk_per_price_pct > 0, 0.0)
+
+
 def _trend_score(df: pd.DataFrame, date) -> tuple[float, list[tuple[float, str]]]:
     """추세 카테고리 원점수(0~1). 내부 배점: 정배열 15, MACD 10, 일목 10 (합 35)."""
     sma_series = trend.sma_alignment(df)
@@ -322,19 +474,10 @@ def score(
     all_evidences.sort(key=lambda item: item[0], reverse=True)
     evidences = [sentence for _, sentence in all_evidences[:5]]
 
-    close_value = df_hist["close"].loc[date]
-    atr_series = volatility.atr(df_hist, period=config.ATR_PERIOD)
-    atr_value = atr_series.loc[date]
-    if pd.isna(atr_value):
+    stop_loss_price = stop_loss_series(df_hist).loc[date]
+    if pd.isna(stop_loss_price):
         raise ValueError(f"{date}: ATR을 계산할 데이터가 부족해 손절가를 산출할 수 없습니다.")
-    stop_loss_price = close_value - config.STOP_LOSS_ATR_MULTIPLIER * atr_value
-
-    risk_per_price_pct = (close_value - stop_loss_price) / close_value
-    position_size_pct = (
-        min(config.MAX_POSITION_PCT, config.RISK_PER_TRADE_PCT / risk_per_price_pct)
-        if risk_per_price_pct > 0
-        else 0.0
-    )
+    position_size_pct = position_size_pct_series(df_hist).loc[date]
 
     sma20 = df_hist["close"].rolling(20).mean().loc[date]
     invalidation_text = (

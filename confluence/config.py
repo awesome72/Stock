@@ -173,3 +173,13 @@ MAX_POSITION_PCT: float = 0.20  # 종목당 최대 비중 20%
 MAX_CONCURRENT_POSITIONS: int = 8  # 동시 보유 최대 종목 수 (5~8)
 TRAILING_STOP_TRIGGER_R: float = 1.0  # 수익 1R 도달 시 본전 이동
 TRAILING_STOP_ATR_MULTIPLIER: float = 3.0  # 이후 3*ATR 추적
+
+# ---------------------------------------------------------------------------
+# 백테스트 엔진 (backtest/engine.py)
+# ---------------------------------------------------------------------------
+
+KOSPI_INDEX_CODE: str = "1001"  # pykrx 지수 코드: KOSPI 종합지수
+BACKTEST_INITIAL_CASH: float = 100_000_000.0  # 기본 초기 자본금(원)
+BACKTEST_WARMUP_DAYS: int = 400  # start 이전에 추가로 확보할 지표 워밍업용 캘린더일수
+BACKTEST_ENTRY_SCORE: float = 80.0
+BACKTEST_EXIT_SCORE: float = 45.0
