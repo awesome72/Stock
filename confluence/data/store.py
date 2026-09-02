@@ -72,9 +72,22 @@ def normalize_date(date_str: str) -> str:
 
 
 def upsert_ohlcv(conn: sqlite3.Connection, ticker: str, df: pd.DataFrame) -> None:
-    """date 인덱스, open/high/low/close/volume 컬럼을 가진 df를 ohlcv 테이블에 upsert."""
+    """date 인덱스, open/high/low/close/volume 컬럼을 가진 df를 ohlcv 테이블에 upsert.
+
+    pandas/pykrx는 numpy 스칼라(float64/int64)를 사용하는데, sqlite3는 이를 native
+    Python 타입으로 인식하지 못하고 원시 바이트(BLOB)로 저장해버리므로 float()/int()로
+    명시적으로 변환해야 한다.
+    """
     rows = [
-        (ticker, normalize_date(str(idx)), row.open, row.high, row.low, row.close, row.volume)
+        (
+            ticker,
+            normalize_date(str(idx)),
+            float(row.open),
+            float(row.high),
+            float(row.low),
+            float(row.close),
+            int(row.volume),
+        )
         for idx, row in df.iterrows()
     ]
     conn.executemany(
@@ -88,9 +101,18 @@ def upsert_ohlcv(conn: sqlite3.Connection, ticker: str, df: pd.DataFrame) -> Non
 
 
 def upsert_flow(conn: sqlite3.Connection, ticker: str, df: pd.DataFrame) -> None:
-    """date 인덱스, foreign_net/institution_net/individual_net 컬럼을 가진 df를 flow 테이블에 upsert."""
+    """date 인덱스, foreign_net/institution_net/individual_net 컬럼을 가진 df를 flow 테이블에 upsert.
+
+    upsert_ohlcv와 동일한 이유로 numpy 스칼라를 float()로 명시 변환한다.
+    """
     rows = [
-        (ticker, normalize_date(str(idx)), row.foreign_net, row.institution_net, row.individual_net)
+        (
+            ticker,
+            normalize_date(str(idx)),
+            float(row.foreign_net),
+            float(row.institution_net),
+            float(row.individual_net),
+        )
         for idx, row in df.iterrows()
     ]
     conn.executemany(

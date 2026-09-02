@@ -28,6 +28,26 @@ ICHIMOKU_SENKOU_B: int = 52
 
 SMA_WINDOWS: tuple[int, int, int, int] = (5, 20, 60, 120)
 
+SUPERTREND_ATR_PERIOD: int = 10
+SUPERTREND_MULTIPLIER: float = 3.0
+
+KELTNER_EMA_PERIOD: int = 20
+KELTNER_MULTIPLIER: float = 2.0
+
+STOCH_K_PERIOD: int = 14
+STOCH_SMOOTH_K: int = 3
+STOCH_D_PERIOD: int = 3
+
+CCI_PERIOD: int = 20
+
+MFI_PERIOD: int = 14
+VWAP_WINDOW: int = 20  # 일봉 데이터를 사용하므로 진짜 일중 VWAP가 아닌 롤링 근사치
+VOLUME_PROFILE_WINDOW: int = 60
+VOLUME_PROFILE_BINS: int = 20
+
+RSI_DIVERGENCE_LOOKBACK: int = 60
+RSI_DIVERGENCE_PIVOT_WINDOW: int = 5  # look-ahead 없이 과거 N봉 기준 신고가 갱신 시점을 스윙 고점으로 정의
+
 # ---------------------------------------------------------------------------
 # 국면(Regime) 판별 임계값
 # ---------------------------------------------------------------------------
