@@ -1,6 +1,6 @@
 pandas
 numpy
-setuptools
+setuptools<81
 pykrx
 streamlit
 plotly
