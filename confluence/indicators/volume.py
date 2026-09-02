@@ -61,17 +61,25 @@ def volume_profile_poc(
     Requires: df['high'], df['low'], df['close'], df['volume']
     Returns: POC 가격 Series.
     """
-    typical_price = (df["high"] + df["low"] + df["close"]) / 3
+    typical_price = ((df["high"] + df["low"] + df["close"]) / 3).to_numpy()
+    vol = df["volume"].to_numpy()
 
-    def _poc(window_tp: pd.Series) -> float:
-        lo, hi = window_tp.min(), window_tp.max()
+    # raw=False로 매 윈도우마다 pandas Series를 새로 만들면 종목당 수천 번 호출되어
+    # 눈에 띄게 느려진다(실측 ~3초/종목, 백테스트에서 지배적 비용). 대신 윈도우의
+    # 정수 위치(row position)만 raw=True로 받아 미리 numpy 배열로 뽑아둔 typical_price/
+    # volume을 직접 인덱싱한다 - 결과는 동일하고 훨씬 빠르다.
+    def _poc(idx_window: np.ndarray) -> float:
+        idx = idx_window.astype(np.int64)
+        tp_w = typical_price[idx]
+        lo, hi = tp_w.min(), tp_w.max()
         if hi <= lo:
             return np.nan
-        vol_window = df.loc[window_tp.index, "volume"].to_numpy()
+        vol_w = vol[idx]
         edges = np.linspace(lo, hi, bins + 1)
-        bucket = np.clip(np.digitize(window_tp.to_numpy(), edges) - 1, 0, bins - 1)
-        bucket_vol = np.bincount(bucket, weights=vol_window, minlength=bins)
+        bucket = np.clip(np.digitize(tp_w, edges) - 1, 0, bins - 1)
+        bucket_vol = np.bincount(bucket, weights=vol_w, minlength=bins)
         best = bucket_vol.argmax()
         return (edges[best] + edges[best + 1]) / 2
 
-    return typical_price.rolling(window).apply(_poc, raw=False)
+    position = pd.Series(np.arange(len(df), dtype=float), index=df.index)
+    return position.rolling(window).apply(_poc, raw=True)

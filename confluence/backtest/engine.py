@@ -21,7 +21,6 @@ import pandas as pd
 
 from .. import config
 from ..data import loader
-from ..engine import regime as regime_engine
 from ..engine import scorer
 from ..indicators import volatility
 
@@ -91,7 +90,7 @@ def _prepare_ticker_data(
 ) -> dict[str, dict]:
     """티커별 원시 OHLCV(+flow) df로부터 백테스트에 필요한 시계열을 미리 계산해둔다.
 
-    score/regime/stop_loss/position_pct/atr을 전체 기간에 대해 한 번씩만(벡터화)
+    score/stop_loss/position_pct/atr을 전체 기간에 대해 한 번씩만(벡터화)
     계산해 시뮬레이션 루프 안에서는 조회(.loc)만 하도록 한다.
     """
     ticker_data: dict[str, dict] = {}
@@ -101,7 +100,6 @@ def _prepare_ticker_data(
         ticker_data[ticker] = {
             "df": df,
             "score": scorer.total_score_series(df, benchmark_close),
-            "regime": regime_engine.classify_regime(df),
             "stop_loss": scorer.stop_loss_series(df),
             "position_pct": scorer.position_size_pct_series(df),
             "atr": volatility.atr(df, period=config.ATR_PERIOD),

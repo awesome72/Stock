@@ -76,7 +76,7 @@ def _trend_score_series(df: pd.DataFrame) -> pd.Series:
     max_sma_score = n * (n - 1) / 2
     sma_norm = (trend.sma_alignment(df) + max_sma_score) / (2 * max_sma_score)
 
-    macd_df = trend.macd(df)
+    macd_df = trend.macd(df, fast=config.MACD_FAST, slow=config.MACD_SLOW, signal=config.MACD_SIGNAL)
     macd_line, signal_line, hist = macd_df["macd"], macd_df["signal"], macd_df["histogram"]
     macd_score = pd.Series(
         np.select(
@@ -220,7 +220,7 @@ def position_size_pct_series(df: pd.DataFrame) -> pd.Series:
 def _trend_score(df: pd.DataFrame, date) -> tuple[float, list[tuple[float, str]]]:
     """추세 카테고리 원점수(0~1). 내부 배점: 정배열 15, MACD 10, 일목 10 (합 35)."""
     sma_series = trend.sma_alignment(df)
-    macd_df = trend.macd(df)
+    macd_df = trend.macd(df, fast=config.MACD_FAST, slow=config.MACD_SLOW, signal=config.MACD_SIGNAL)
     ichimoku_df = trend.ichimoku(df)
 
     sma_value = sma_series.loc[date]
