@@ -77,6 +77,16 @@ def fetch_ohlcv(ticker: str, start: str, end: str) -> pd.DataFrame:
             columns={"시가": "open", "고가": "high", "저가": "low", "종가": "close", "거래량": "volume"}
         )[["open", "high", "low", "close", "volume"]]
 
+        # pykrx는 장기 거래정지 구간을 행을 비우는 대신 OHLC=0으로 채워서 반환하는 경우가 있다.
+        # 0을 실제 가격으로 저장하면 이후 포지션 사이징(포지션가치/진입가)에서 0으로 나눠
+        # cash가 inf/NaN으로 오염되므로, 결측과 동일하게 취급해 행 자체를 제거한다.
+        invalid = (raw[["open", "high", "low", "close"]] <= 0).any(axis=1)
+        if invalid.any():
+            logger.warning(
+                "%s: 가격이 0 이하인 행 %d개 제외 (거래정지 구간으로 추정)", ticker, int(invalid.sum())
+            )
+            raw = raw[~invalid]
+
         store.upsert_ohlcv(conn, ticker, raw)
         store.expand_fetch_range(conn, "ohlcv", ticker, start, end)
 
