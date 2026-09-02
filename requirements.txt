@@ -1,7 +1,6 @@
 pandas
 numpy
 pykrx
-FinanceDataReader
 streamlit
 plotly
 pytest
