@@ -49,6 +49,17 @@ RSI_DIVERGENCE_LOOKBACK: int = 60
 RSI_DIVERGENCE_PIVOT_WINDOW: int = 5  # look-ahead 없이 과거 N봉 기준 신고가 갱신 시점을 스윙 고점으로 정의
 
 # ---------------------------------------------------------------------------
+# 스코어링 엔진 파라미터 (engine/scorer.py)
+# ---------------------------------------------------------------------------
+
+OBV_TREND_LOOKBACK: int = 20  # OBV가 N일 전보다 높은지로 상승/하락 판별
+VOLUME_SURGE_LOOKBACK: int = 20  # 거래량 급증 판별 기준 이동평균 기간
+VOLUME_SURGE_MULTIPLIER: float = 1.5  # 이 배수 이상이면 거래량 급증
+FLOW_STREAK_FULL_SCORE_DAYS: int = 5  # 연속 순매수일수가 이 값 이상이면 수급 서브점수 만점
+RS_WINDOW: int = 20  # 상대강도 계산에 사용할 수익률 비교 기간(거래일)
+RS_SCALE: float = 0.10  # 벤치마크 대비 초과수익률을 0~1 점수로 매핑할 때의 정규화 폭(±10%p)
+
+# ---------------------------------------------------------------------------
 # 국면(Regime) 판별 임계값
 # ---------------------------------------------------------------------------
 
@@ -87,6 +98,14 @@ CATEGORIES: tuple[str, str, str, str, str] = (
     "flow",
     "relative_strength",
 )
+
+CATEGORY_LABEL_KO: dict[str, str] = {
+    "trend": "추세",
+    "momentum": "모멘텀",
+    "volume": "거래량",
+    "flow": "수급",
+    "relative_strength": "상대강도",
+}
 
 BASE_CATEGORY_WEIGHTS: dict[str, int] = {
     "trend": 35,
