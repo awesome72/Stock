@@ -1,0 +1,8 @@
+pandas
+numpy
+pandas-ta
+pykrx
+FinanceDataReader
+streamlit
+plotly
+pytest
