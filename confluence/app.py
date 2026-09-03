@@ -49,6 +49,11 @@ def _cached_benchmark(start: str, end: str) -> pd.Series | None:
         return None
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def _cached_ticker_name(ticker: str) -> str:
+    return loader.fetch_ticker_name(ticker)
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_ohlcv_with_flow(ticker: str, start: str, end: str) -> pd.DataFrame:
     df = loader.fetch_ohlcv(ticker, start, end)
@@ -60,6 +65,39 @@ def _cached_ohlcv_with_flow(ticker: str, start: str, end: str) -> pd.DataFrame:
     except RuntimeError:
         pass  # KRX 미인증: 수급 데이터 없이 진행 (해당 종목의 수급 카테고리는 계산 불가로 처리됨)
     return df
+
+
+# 지표/카테고리 설명 (UI 표시용 정적 텍스트 - 튜닝 파라미터가 아니므로 config.py가 아닌 여기 둔다)
+
+OVERLAY_HELP: dict[str, str] = {
+    "이동평균": "일정 기간(SMA5/20/60/120) 종가의 평균을 이은 선. 가격이 이평선 위에 있고 "
+    "짧은 이평선이 긴 이평선 위에 있으면(정배열) 상승 추세로 해석한다.",
+    "볼린저밴드": "이동평균에 표준편차를 더하고 뺀 상단/하단 밴드. 밴드 폭은 변동성을, "
+    "밴드 이탈은 과매수·과매도 가능성을 나타낸다.",
+    "일목균형표": "전환선·기준선·구름대(선행스팬A/B)·후행스팬으로 구성된 추세 지표. "
+    "가격이 구름대 위/아래에 있는지로 추세 방향을, 구름 두께로 지지·저항 강도를 가늠한다.",
+    "거래량": "일별 체결 주식 수. 가격 변동에 실린 매매 강도를 보여준다.",
+}
+
+CHART_INDICATOR_HELP: dict[str, str] = {
+    "MACD": "단기(12일)·장기(26일) 이동평균의 차이(MACD선)와 그 신호선(Signal, 9일 평균)의 "
+    "교차로 추세 전환 시점을 포착한다. 막대(Histogram)는 둘의 차이로, 커질수록 추세가 강하다.",
+    "RSI": "최근 상승폭과 하락폭의 비율을 0~100으로 나타낸 오실레이터. 통상 70 이상은 "
+    "과매수, 30 이하는 과매도 구간으로 참고하되, 강한 추세장에서는 과매수 상태가 "
+    "오히려 모멘텀 강도를 뜻할 수 있다.",
+}
+
+CATEGORY_HELP: dict[str, str] = {
+    "trend": "정배열(이동평균), MACD, 일목균형표로 추세의 방향과 강도를 평가한다.",
+    "momentum": "RSI, 스토캐스틱, RSI 다이버전스로 상승·하락 탄력을 평가한다. 국면에 따라 "
+    "과매수 해석이 달라진다(추세장=모멘텀 강도, 횡보장=반전 신호).",
+    "volume": "OBV(누적거래량), 매물대(POC) 돌파, 거래량 급증 여부로 가격 움직임에 실린 "
+    "거래 강도를 평가한다.",
+    "flow": "외국인·기관 순매수 연속일수로 수급 주체의 매수/매도 압력을 평가한다. "
+    "KRX 인증 정보가 없거나 최근 데이터가 없으면 계산하지 않는다.",
+    "relative_strength": "KOSPI 지수 대비 초과수익률로 시장 대비 상대적 강도를 평가한다. "
+    "벤치마크 데이터가 없으면 중립값(0.5)으로 처리한다.",
+}
 
 
 def _regime_ko(label) -> str:
@@ -146,13 +184,22 @@ def render_stock_analysis_tab() -> None:
     if not ticker:
         return
 
+    company_name = _cached_ticker_name(ticker)
+    if company_name:
+        st.markdown(f"#### {company_name} ({ticker})")
+    else:
+        st.warning(f"{ticker}: 종목명을 찾을 수 없습니다. 티커를 확인하세요(상장폐지 종목일 수 있음).")
+
     overlay_cols = st.columns(4)
     overlays = {
-        "이동평균": overlay_cols[0].checkbox("이동평균", value=True),
-        "볼린저밴드": overlay_cols[1].checkbox("볼린저밴드", value=False),
-        "일목균형표": overlay_cols[2].checkbox("일목균형표", value=False),
-        "거래량": overlay_cols[3].checkbox("거래량", value=True),
+        "이동평균": overlay_cols[0].checkbox("이동평균", value=True, help=OVERLAY_HELP["이동평균"]),
+        "볼린저밴드": overlay_cols[1].checkbox("볼린저밴드", value=False, help=OVERLAY_HELP["볼린저밴드"]),
+        "일목균형표": overlay_cols[2].checkbox("일목균형표", value=False, help=OVERLAY_HELP["일목균형표"]),
+        "거래량": overlay_cols[3].checkbox("거래량", value=True, help=OVERLAY_HELP["거래량"]),
     }
+    with st.expander("차트 지표 설명"):
+        for name, desc in {**OVERLAY_HELP, **CHART_INDICATOR_HELP}.items():
+            st.markdown(f"- **{name}**: {desc}")
 
     with st.spinner(f"{ticker} 데이터 조회 중..."):
         df = _cached_ohlcv_with_flow(ticker, ANALYSIS_START, TODAY)
@@ -187,6 +234,9 @@ def render_stock_analysis_tab() -> None:
                 min(1.0, max(0.0, ratio)),
                 text=f"{config.CATEGORY_LABEL_KO[cat]}  {scores['earned']:.1f} / {scores['max']:.0f}",
             )
+        with st.expander("카테고리 설명"):
+            for cat in card.category_scores:
+                st.markdown(f"- **{config.CATEGORY_LABEL_KO[cat]}**: {CATEGORY_HELP[cat]}")
 
         st.markdown("**근거**")
         if card.evidences:
@@ -222,6 +272,7 @@ def _run_scan(tickers: list[str], benchmark_close: pd.Series | None) -> tuple[pd
                     rows.append(
                         {
                             "티커": ticker,
+                            "종목명": _cached_ticker_name(ticker),
                             "점수": round(float(total_score), 1),
                             "등급": scorer.grade(total_score),
                             "국면": _regime_ko(regime_series.loc[last_valid]),
@@ -254,6 +305,17 @@ def render_screener_tab() -> None:
         "첫 스캔은 KRX 조회 때문에 종목당 최대 1초 정도 걸릴 수 있다(요청 사이 0.3초 지연 포함). "
         "이후 1시간 동안은 캐시된 결과를 사용한다."
     )
+    with st.expander("점수·등급·국면 설명"):
+        st.markdown("**점수(0~100)**: 아래 5개 카테고리 점수의 가중합(국면에 따라 가중치가 달라진다).")
+        for cat in config.CATEGORIES:
+            st.markdown(f"- **{config.CATEGORY_LABEL_KO[cat]}**: {CATEGORY_HELP[cat]}")
+        st.markdown(
+            f"**등급**: {config.GRADE_STRONG_CONFLUENCE}점 이상 강한 합의 · "
+            f"{config.GRADE_WATCH}~{config.GRADE_STRONG_CONFLUENCE - 1}점 관심 · "
+            f"{config.GRADE_NO_ENTRY}~{config.GRADE_WATCH - 1}점 진입 금지 · "
+            f"{config.GRADE_NO_ENTRY}점 미만 회피"
+        )
+        st.markdown("**국면**: 추세/변동성 지표로 판별한 시장 국면(추세 상승·추세 하락·횡보·변동성 확대)에 따라 카테고리별 가중치가 달라진다.")
 
     if st.button("스캔 실행", type="primary"):
         tickers = _cached_universe("KOSPI", universe_size)
@@ -283,7 +345,12 @@ def render_screener_tab() -> None:
     if not filtered.empty:
         # Streamlit 탭은 코드에서 프로그래밍적으로 전환할 수 없으므로(공식 API 없음),
         # session_state에 선택값을 저장해두고 '종목 분석' 탭이 그 값을 기본값으로 읽게 한다.
-        chosen = st.selectbox("종목 분석 탭에서 확인할 티커", filtered["티커"].tolist())
+        name_by_ticker = dict(zip(filtered["티커"], filtered["종목명"]))
+        chosen = st.selectbox(
+            "종목 분석 탭에서 확인할 티커",
+            filtered["티커"].tolist(),
+            format_func=lambda t: f"{t} ({name_by_ticker.get(t, '')})",
+        )
         if st.button("종목 분석 탭으로 전달"):
             st.session_state["selected_ticker"] = chosen
             st.success(f"{chosen}을(를) '종목 분석' 탭에 전달했습니다. 상단의 '종목 분석' 탭을 클릭하세요.")
@@ -364,6 +431,7 @@ def render_backtest_tab() -> None:
         [
             {
                 "티커": t.ticker,
+                "종목명": _cached_ticker_name(t.ticker),
                 "진입일": t.entry_date.date(),
                 "청산일": t.exit_date.date(),
                 "수익률": f"{t.return_pct * 100:+.2f}%",

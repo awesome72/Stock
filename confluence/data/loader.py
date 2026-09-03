@@ -173,6 +173,27 @@ def fetch_universe(market: str = "KOSPI", top_n: int = 200) -> list[str]:
     return cap.sort_values("시가총액", ascending=False).head(top_n).index.tolist()
 
 
+def fetch_ticker_name(ticker: str) -> str:
+    """티커에 해당하는 종목명을 조회한다.
+
+    KRX 상장/상장폐지 종목 목록(공개, 인증 불필요)에서 조회하며, 시세 조회와 달리
+    KRX_ID/KRX_PW가 없어도 동작한다.
+
+    Parameters
+    ----------
+    ticker : 6자리 종목코드
+
+    Returns
+    -------
+    종목명 문자열. 목록에 없는 티커면 빈 문자열을 반환한다(예외를 던지지 않음 -
+    화면에 티커만 표시하고 넘어갈 수 있게 하기 위함).
+    """
+    from pykrx import stock
+
+    name = stock.get_market_ticker_name(ticker)
+    return name if isinstance(name, str) else ""
+
+
 def fetch_index_ohlcv(index_code: str, start: str, end: str) -> pd.DataFrame:
     """지수(예: KOSPI 종합지수)의 일봉 OHLCV를 조회한다. SQLite 캐시를 우선 사용한다.
 
