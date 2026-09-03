@@ -177,6 +177,66 @@ def _build_price_figure(df: pd.DataFrame, overlays: dict[str, bool]) -> go.Figur
     return fig
 
 
+def _build_score_trend_figure(score_series: pd.Series, lookback_days: int) -> go.Figure:
+    recent = score_series.dropna().tail(lookback_days)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=recent.index, y=recent, name="총점", line=dict(width=2)))
+    band_specs = [
+        (config.GRADE_STRONG_CONFLUENCE, 100, "rgba(0,150,0,0.08)"),
+        (config.GRADE_WATCH, config.GRADE_STRONG_CONFLUENCE, "rgba(150,150,0,0.08)"),
+        (config.GRADE_NO_ENTRY, config.GRADE_WATCH, "rgba(150,150,150,0.08)"),
+        (0, config.GRADE_NO_ENTRY, "rgba(200,0,0,0.06)"),
+    ]
+    for y0, y1, color in band_specs:
+        fig.add_hrect(y0=y0, y1=y1, fillcolor=color, line_width=0)
+    fig.update_layout(
+        height=220,
+        margin=dict(t=10, b=10, l=10, r=10),
+        yaxis=dict(range=[0, 100], title="점수"),
+        showlegend=False,
+    )
+    return fig
+
+
+# 카테고리 원점수 비(earned/max)가 이 값 밖이면 "특히 강하다/약하다"로 언급할 만큼
+# 뚜렷하다고 본다(완전 중립 0.5 근처는 언급하지 않기 위한 문턱 - 튜닝 파라미터는 아니고
+# 서술 여부를 가르는 표시 임계값이라 config.py로 옮기지 않음).
+_NOTABLE_CATEGORY_RATIO = 0.5
+
+
+def _analysis_summary_lines(
+    card, company_label: str, last_close: float, prev_close: float, current_price_note: str
+) -> list[str]:
+    """스코어카드를 사람이 읽는 요약 문장으로 변환한다. 근거(evidence) 재료를 재배열할 뿐,
+    새 지표나 예측을 만들어내지 않는다(CLAUDE.md 3번 규칙: predict/forecast 금지)."""
+    ratios = {
+        cat: (s["earned"] / s["max"] if s["max"] else 0.0) for cat, s in card.category_scores.items()
+    }
+    strongest = max(ratios, key=ratios.get)
+    weakest = min(ratios, key=ratios.get)
+
+    lines = [
+        f"**{company_label}**은(는) 현재 **{_regime_ko(card.regime)}** 국면에서 합의 점수 "
+        f"**{card.total:.1f}/100점 ({card.grade})**입니다{current_price_note}.",
+    ]
+    if ratios[strongest] - ratios[weakest] >= _NOTABLE_CATEGORY_RATIO / 2:
+        lines.append(
+            f"5개 카테고리 중 **{config.CATEGORY_LABEL_KO[strongest]}** 근거가 가장 강하고"
+            f"({card.category_scores[strongest]['earned']:.1f}/{card.category_scores[strongest]['max']:.0f}), "
+            f"**{config.CATEGORY_LABEL_KO[weakest]}** 근거가 가장 약합니다"
+            f"({card.category_scores[weakest]['earned']:.1f}/{card.category_scores[weakest]['max']:.0f})."
+        )
+    if not pd.isna(card.stop_loss) and last_close:
+        risk_pct = (last_close - card.stop_loss) / last_close * 100
+        lines.append(
+            f"ATR 기준 손절가는 **{card.stop_loss:,.0f}원**(현재가 대비 {risk_pct:.1f}% 하락 지점)이며, "
+            f"거래당 계좌 리스크를 {config.RISK_PER_TRADE_PCT * 100:.1f}%로 제한하려면 권장 비중은 "
+            f"**{card.position_size_pct * 100:.1f}%**입니다."
+        )
+    lines.append(f"반증 조건(이 조건 충족 시 근거가 무효화됨): {card.invalidation}")
+    return lines
+
+
 def render_stock_analysis_tab() -> None:
     st.subheader("종목 분석")
     default_ticker = st.session_state.get("selected_ticker", "005930")
@@ -209,6 +269,22 @@ def render_stock_analysis_tab() -> None:
         st.error(f"{ticker}: 데이터를 가져오지 못했습니다. 종목코드를 확인하세요.")
         return
 
+    last_date = df.index[-1]
+    last_close = df["close"].loc[last_date]
+    prev_close = df["close"].shift(1).loc[last_date]
+    if pd.notna(prev_close) and prev_close:
+        change_pct = (last_close / prev_close - 1) * 100
+        price_note = f" (현재가 {last_close:,.0f}원, 전일 대비 {change_pct:+.2f}%)"
+    else:
+        price_note = f" (현재가 {last_close:,.0f}원)"
+
+    try:
+        card = scorer.score(df, last_date, benchmark_close=benchmark_close, ticker=ticker)
+    except ValueError as exc:
+        # CLAUDE.md 규칙: 데이터가 없을 때 임의 값으로 채우지 않는다 - 계산 불가 사유를 그대로 노출.
+        st.warning(f"스코어 계산 불가 ({last_date.date()}): {exc}")
+        card = None
+
     chart_col, score_col = st.columns([3, 1])
 
     with chart_col:
@@ -216,38 +292,60 @@ def render_stock_analysis_tab() -> None:
         st.plotly_chart(fig, width="stretch")
 
     with score_col:
-        last_date = df.index[-1]
-        try:
-            card = scorer.score(df, last_date, benchmark_close=benchmark_close, ticker=ticker)
-        except ValueError as exc:
-            # CLAUDE.md 규칙: 데이터가 없을 때 임의 값으로 채우지 않는다 - 계산 불가 사유를 그대로 노출.
-            st.warning(f"스코어 계산 불가 ({last_date.date()}): {exc}")
-            return
-
-        st.metric("총점", f"{card.total:.1f} / 100", card.grade)
-        st.caption(f"국면: {_regime_ko(card.regime)}  ·  기준일: {last_date.date()}")
-
-        st.markdown("**카테고리별 점수**")
-        for cat, scores in card.category_scores.items():
-            ratio = scores["earned"] / scores["max"] if scores["max"] else 0.0
-            st.progress(
-                min(1.0, max(0.0, ratio)),
-                text=f"{config.CATEGORY_LABEL_KO[cat]}  {scores['earned']:.1f} / {scores['max']:.0f}",
-            )
-        with st.expander("카테고리 설명"):
-            for cat in card.category_scores:
-                st.markdown(f"- **{config.CATEGORY_LABEL_KO[cat]}**: {CATEGORY_HELP[cat]}")
-
-        st.markdown("**근거**")
-        if card.evidences:
-            for ev in card.evidences:
-                st.write(f"- {ev}")
+        if card is None:
+            st.info("데이터 부족으로 이번 종목은 스코어를 계산할 수 없습니다.")
         else:
-            st.write("- (해당 없음)")
+            st.metric("총점", f"{card.total:.1f} / 100", card.grade)
+            st.caption(f"국면: {_regime_ko(card.regime)}  ·  기준일: {last_date.date()}")
 
-        st.markdown(f"**반증 조건**\n\n{card.invalidation}")
-        st.markdown(f"**손절가**: {card.stop_loss:,.0f}원")
-        st.markdown(f"**권장 비중**: {card.position_size_pct * 100:.1f}%")
+            st.markdown("**카테고리별 점수**")
+            for cat, scores in card.category_scores.items():
+                ratio = scores["earned"] / scores["max"] if scores["max"] else 0.0
+                st.progress(
+                    min(1.0, max(0.0, ratio)),
+                    text=f"{config.CATEGORY_LABEL_KO[cat]}  {scores['earned']:.1f} / {scores['max']:.0f}",
+                )
+            with st.expander("카테고리 설명"):
+                for cat in card.category_scores:
+                    st.markdown(f"- **{config.CATEGORY_LABEL_KO[cat]}**: {CATEGORY_HELP[cat]}")
+
+            st.markdown("**근거**")
+            if card.evidences:
+                for ev in card.evidences:
+                    st.write(f"- {ev}")
+            else:
+                st.write("- (해당 없음)")
+
+            st.markdown(f"**반증 조건**\n\n{card.invalidation}")
+            st.markdown(f"**손절가**: {card.stop_loss:,.0f}원")
+            st.markdown(f"**권장 비중**: {card.position_size_pct * 100:.1f}%")
+
+    if card is not None:
+        st.markdown("---")
+        st.markdown("### 종합 분석")
+        summary_col, trend_col = st.columns([2, 1])
+        with summary_col:
+            for line in _analysis_summary_lines(card, company_name or ticker, last_close, prev_close, price_note):
+                st.markdown(f"- {line}")
+        with trend_col:
+            score_series = scorer.total_score_series(df, benchmark_close)
+            if score_series.dropna().empty:
+                st.caption("점수 추이를 계산할 데이터가 부족합니다.")
+            else:
+                st.caption(
+                    f"최근 {config.SCORE_TREND_LOOKBACK_DAYS}거래일 점수 추이 "
+                    f"(녹색 {config.GRADE_STRONG_CONFLUENCE}+ 강한합의, 노랑 {config.GRADE_WATCH}~ 관심, "
+                    f"회색 {config.GRADE_NO_ENTRY}~ 진입금지, 빨강 {config.GRADE_NO_ENTRY}미만 회피)"
+                )
+                st.plotly_chart(
+                    _build_score_trend_figure(score_series, config.SCORE_TREND_LOOKBACK_DAYS),
+                    width="stretch",
+                )
+        st.caption(
+            "이 분석은 과거 시세·수급 데이터에서 도출한 근거(evidence) 요약이며, 미래 수익률을 "
+            "예측하거나 특정 매매를 권유하지 않습니다. 최종 투자 판단과 그 결과에 대한 책임은 "
+            "투자자 본인에게 있습니다."
+        )
 
 
 # ---------------------------------------------------------------------------

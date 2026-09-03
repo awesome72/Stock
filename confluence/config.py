@@ -183,3 +183,9 @@ BACKTEST_INITIAL_CASH: float = 100_000_000.0  # 기본 초기 자본금(원)
 BACKTEST_WARMUP_DAYS: int = 400  # start 이전에 추가로 확보할 지표 워밍업용 캘린더일수
 BACKTEST_ENTRY_SCORE: float = 80.0
 BACKTEST_EXIT_SCORE: float = 45.0
+
+# ---------------------------------------------------------------------------
+# Streamlit UI (app.py) - 전략 파라미터가 아닌 화면 표시 옵션
+# ---------------------------------------------------------------------------
+
+SCORE_TREND_LOOKBACK_DAYS: int = 120  # 종목 분석 탭의 점수 추이 차트에 표시할 최근 거래일수
