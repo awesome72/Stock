@@ -1,7 +1,7 @@
-pandas
+pandas<3.0
 numpy
 setuptools<81
-pykrx
+pykrx>=1.2.8
 streamlit
 plotly
 pytest
